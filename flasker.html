@@ -1,0 +1,99 @@
+from flask import Flask, request, Response, send_from_directory
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+import re
+
+app = Flask(__name__, static_folder='.', static_url_path='')
+
+CSS_CONTENT = """body { font-family: Arial; margin: 20px; }
+input, button { padding: 10px; font-size: 16px; }
+#proxyframe { display: block; margin-top: 10px; }
+#status { margin-top: 10px; color: green; }"""
+
+JS_CONTENT = """function loadSite() {
+  const url = document.getElementById('url').value.trim();
+  if (!url) return;
+  const status = document.getElementById('status');
+  const frame = document.getElementById('proxyframe');
+  status.textContent = 'Loading...';
+  
+  const proxyUrl = '/proxy?url=' + encodeURIComponent(url);
+  frame.src = proxyUrl;
+  
+  frame.onerror = function() {
+    status.textContent = 'Force retry...';
+    setTimeout(() => { frame.src = proxyUrl; }, 1000);
+  };
+  
+  frame.onload = function() {
+    status.textContent = 'Loaded: ' + url;
+  };
+  
+  document.getElementById('url').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') loadSite();
+  });
+}
+
+window.onerror = function() { return true; };
+"""
+
+HTML_CONTENT = f'''<!DOCTYPE html>
+<html>
+<head>
+  <title>Proxy Browser</title>
+  <style>{CSS_CONTENT}</style>
+</head>
+<body>
+  <h2>Enter URL to Proxy:</h2>
+  <input type="text" id="url" placeholder="https://example.com" style="width: 400px;">
+  <button onclick="loadSite()">Load</button>
+  <iframe id="proxyframe" style="width:100%; height:500px; border:1px solid #ccc;"></iframe>
+  <div id="status"></div>
+  <script>{JS_CONTENT}</script>
+</body>
+</html>'''
+
+@app.route('/')
+def home():
+  return HTML_CONTENT
+
+@app.route('/proxy')
+def proxy():
+  target_url = request.args.get('url')
+  if not target_url:
+    return 'No URL', 400
+  
+  try:
+    cache_url = f"http://webcache.googleusercontent.com/search?q=cache:{target_url}"
+    resp = requests.get(cache_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+    html = resp.text
+    
+    if 'Cached' not in html:
+      resp = requests.get(target_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+      html = resp.text
+    
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    base_proxy = f"/proxy?url={target_url}"
+    
+    for tag in soup.find_all(href=True):
+      tag['href'] = urljoin(base_proxy + '#', tag['href'])
+    
+    for tag in soup.find_all(src=True):
+      tag['src'] = urljoin(base_proxy + '#', tag['src'])
+    
+    for form in soup.find_all('form', {'action': True}):
+      form['action'] = urljoin(base_proxy + '#', form['action'])
+    
+    html = re.sub(r'url\\s*\\(\\s*["\']?([^"\'\\)]+)["\']?\\s*\\)', lambda m: f'url({base_proxy}#{m.group(1)})', str(soup))
+    
+    return Response(html, mimetype='text/html')
+  
+  except Exception as e:
+    return f'Error bypassed: {str(e)}', 200
+
+if __name__ == '__main__':
+  print("Starting one-file proxy on http://localhost:5000")
+  print("pip install flask requests beautifulsoup4 first!")
+  app.run(host='0.0.0.0', port=5000)
